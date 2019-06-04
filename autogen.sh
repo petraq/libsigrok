@@ -22,3 +22,5 @@ test -n "$srcdir" || srcdir=`dirname "$0"`
 test -n "$srcdir" || srcdir=.
 
 autoreconf --force --install --verbose "$srcdir"
+case `uname` in Darwin*) glibtoolize --copy ;;
+  *) libtoolize --copy ;; esac

@@ -614,6 +614,12 @@ src_libdrivers_la_SOURCES += \
 	src/hardware/zketech-ebd-usb/protocol.c \
 	src/hardware/zketech-ebd-usb/api.c
 endif
+if HW_SUMP2
+src_libdrivers_la_SOURCES += \
+	src/hardware/sump2/protocol.h \
+	src/hardware/sump2/protocol.c \
+	src/hardware/sump2/api.c
+endif
 
 libsigrok_la_LIBADD = src/libdrivers.lo $(SR_EXTRA_LIBS) $(LIBSIGROK_LIBS)
 libsigrok_la_LDFLAGS = -version-info $(SR_LIB_VERSION) -no-undefined
