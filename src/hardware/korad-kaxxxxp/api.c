@@ -55,6 +55,9 @@ static const struct korad_kaxxxxp_model models[] = {
 	/* Sometimes the KA3005P has an extra 0x01 after the ID. */
 	{KORAD_KA3005P_0X01, "Korad", "KA3005P",
 		"KORADKA3005PV2.0\x01", 1, {0, 31, 0.01}, {0, 5, 0.001}},
+	/* Sometimes the KA3005P has an extra 0xBC after the ID. */
+	{KORAD_KA3005P_0XBC, "Korad", "KA3005P",
+		"KORADKA3005PV2.0\xBC", 1, {0, 31, 0.01}, {0, 5, 0.001}},
 	{KORAD_KD3005P, "Korad", "KD3005P",
 		"KORAD KD3005P V2.0", 1, {0, 31, 0.01}, {0, 5, 0.001}},
 	{KORAD_KD3005P_V20_NOSP, "Korad", "KD3005P",
@@ -65,6 +68,10 @@ static const struct korad_kaxxxxp_model models[] = {
 		"TENMA72-2540V2.0", 1, {0, 31, 0.01}, {0, 5, 0.001}},
 	{TENMA_72_2540_V21, "Tenma", "72-2540",
 		"TENMA 72-2540 V2.1", 1, {0, 31, 0.01}, {0, 5, 0.001}},
+	{TENMA_72_2535_V21, "Tenma", "72-2535",
+		"TENMA 72-2535 V2.1", 1, {0, 31, 0.01}, {0, 3, 0.001}},
+	{STAMOS_SLS31_V20, "Stamos Soldering", "S-LS-31",
+		"S-LS-31 V2.0", 1, {0, 31, 0.01}, {0, 5.1, 0.001}},
 	ALL_ZERO
 };
 
@@ -126,7 +133,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	sr_dbg("Received: %d, %s", i, reply);
 	model_id = -1;
 	for (i = 0; models[i].id; i++) {
-		if (!strcmp(models[i].id, reply))
+		if (!g_strcmp0(models[i].id, reply))
 			model_id = i;
 	}
 	if (model_id < 0) {

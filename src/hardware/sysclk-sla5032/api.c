@@ -2,6 +2,7 @@
  * This file is part of the libsigrok project.
  *
  * Copyright (C) 2014 Daniel Elstner <daniel.kitta@gmail.com>
+ * Copyright (C) 2019 Vitaliy Vorobyov
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,6 +27,9 @@
 #include <libsigrok-internal.h>
 #include "protocol.h"
 
+ /* Number of logic channels. */
+#define NUM_CHANNELS	32
+
 static const uint32_t scanopts[] = {
 	SR_CONF_CONN,
 };
@@ -41,17 +45,26 @@ static const int32_t trigger_matches[] = {
 	SR_TRIGGER_FALLING,
 };
 
-static const char *trigger_sources[] = {
-	[TRIGGER_CHANNELS] = "CH",
-	[TRIGGER_EXT_TRG] = "TRG",
+static const uint64_t capture_ratios[] = {
+	0, 10, 20, 30, 50, 70, 90, 100,
 };
 
-static const char *signal_edges[] = {
-	[EDGE_POSITIVE] = "r",
-	[EDGE_NEGATIVE] = "f",
+static const uint32_t devopts[] = {
+	SR_CONF_LIMIT_SAMPLES | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_SAMPLERATE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_CAPTURE_RATIO | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_TRIGGER_MATCH | SR_CONF_LIST,
+	SR_CONF_RLE | SR_CONF_GET,
 };
 
-static struct sr_dev_inst *dev_inst_new(const struct model_info *model)
+static const uint64_t samplerates[] = {
+	SR_MHZ(500), SR_MHZ(400), SR_MHZ(250), SR_MHZ(200), SR_MHZ(100),
+	SR_MHZ(50), SR_MHZ(25), SR_MHZ(20), SR_MHZ(10), SR_MHZ(5), SR_MHZ(2),
+	SR_MHZ(1), SR_KHZ(500), SR_KHZ(200), SR_KHZ(100), SR_KHZ(50),
+	SR_KHZ(20), SR_KHZ(10), SR_KHZ(5), SR_KHZ(2),
+};
+
+static struct sr_dev_inst *dev_inst_new(void)
 {
 	struct sr_dev_inst *sdi;
 	struct dev_context *devc;
@@ -59,27 +72,27 @@ static struct sr_dev_inst *dev_inst_new(const struct model_info *model)
 	char name[8];
 
 	devc = g_malloc0(sizeof(struct dev_context));
-	devc->model = model;
 	devc->active_fpga_config = FPGA_NOCONF;
-	devc->cfg_rle = TRUE;
-	devc->samplerate = model->samplerates[0];
-	devc->channel_mask = (UINT64_C(1) << model->num_channels) - 1;
+	devc->samplerate = samplerates[0];
+	devc->limit_samples = MAX_LIMIT_SAMPLES;
+	devc->capture_ratio = capture_ratios[4];
+	devc->channel_mask = (UINT64_C(1) << NUM_CHANNELS) - 1;
 
 	sdi = g_malloc0(sizeof(struct sr_dev_inst));
 	sdi->status = SR_ST_INACTIVE;
 	sdi->vendor = g_strdup("Sysclk");
-	sdi->model = g_strdup(model->name);
+	sdi->model = g_strdup("SLA5032");
 	sdi->priv = devc;
 
-	for (i = 0; i < model->num_channels; i++) {
-		g_snprintf(name, sizeof(name), "CH%d", i + 1);
+	for (i = 0; i < NUM_CHANNELS; i++) {
+		g_snprintf(name, sizeof(name), "CH%d", i);
 		sr_channel_new(sdi, i, SR_CHANNEL_LOGIC, TRUE, name);
 	}
 
 	return sdi;
 }
 
-/* Create a new device instance for a libusb device if it is a Sysclk LWLA
+/* Create a new device instance for a libusb device if it is a Sysclk SLA5032
  * device and also matches the connection specification.
  */
 static struct sr_dev_inst *dev_inst_new_matching(GSList *conn_matches,
@@ -87,7 +100,6 @@ static struct sr_dev_inst *dev_inst_new_matching(GSList *conn_matches,
 {
 	GSList *node;
 	struct sr_usb_dev_inst *usb;
-	const struct model_info *model;
 	struct sr_dev_inst *sdi;
 	struct libusb_device_descriptor des;
 	int bus, address, ret;
@@ -114,17 +126,14 @@ static struct sr_dev_inst *dev_inst_new_matching(GSList *conn_matches,
 	pid = des.idProduct;
 
 	/* Create sigrok device instance. */
-	if (vid == USB_VID_SYSCLK && pid == USB_PID_LWLA1016) {
-		model = &lwla1016_info;
-	} else if (vid == USB_VID_SYSCLK && pid == USB_PID_LWLA1034) {
-		model = &lwla1034_info;
+	if (vid == USB_VID_SYSCLK && pid == USB_PID_SLA5032) {
 	} else {
 		if (conn_matches)
 			sr_warn("USB device %d.%d (%04x:%04x) is not a"
-				" Sysclk LWLA.", bus, address, vid, pid);
+				" Sysclk SLA5032.", bus, address, vid, pid);
 		return NULL;
 	}
-	sdi = dev_inst_new(model);
+	sdi = dev_inst_new();
 
 	sdi->inst_type = SR_INST_USB;
 	sdi->conn = sr_usb_dev_inst_new(bus, address, NULL);
@@ -169,7 +178,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		return NULL;
 	}
 
-	/* Scan the USB device list for matching LWLA devices. */
+	/* Scan the USB device list for matching devices. */
 	for (i = 0; i < num_devs; i++) {
 		sdi = dev_inst_new_matching(conn_devices, devlist[i]);
 		if (!sdi)
@@ -185,142 +194,68 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	return std_scan_complete(di, devices);
 }
 
-/* Drain any pending data from the USB transfer buffers on the device.
- * This may be necessary e.g. after a crash or generally to clean up after
- * an abnormal condition.
- */
-static int drain_usb(struct sr_usb_dev_inst *usb, unsigned int endpoint)
-{
-	int drained, xfer_len, ret;
-	unsigned char buf[512];
-	const unsigned int drain_timeout_ms = 10;
-
-	drained = 0;
-	do {
-		xfer_len = 0;
-		ret = libusb_bulk_transfer(usb->devhdl, endpoint,
-					   buf, sizeof(buf), &xfer_len,
-					   drain_timeout_ms);
-		drained += xfer_len;
-	} while (ret == LIBUSB_SUCCESS && xfer_len != 0);
-
-	if (ret != LIBUSB_SUCCESS && ret != LIBUSB_ERROR_TIMEOUT) {
-		sr_err("Failed to drain USB endpoint %u: %s.",
-		       endpoint & (LIBUSB_ENDPOINT_IN - 1),
-		       libusb_error_name(ret));
-		return SR_ERR;
-	}
-	if (drained > 0) {
-		sr_warn("Drained %d bytes from USB endpoint %u.",
-			drained, endpoint & (LIBUSB_ENDPOINT_IN - 1));
-	}
-
-	return SR_OK;
-}
-
 static int dev_open(struct sr_dev_inst *sdi)
 {
 	struct drv_context *drvc;
 	struct dev_context *devc;
 	struct sr_usb_dev_inst *usb;
-	int i, ret;
+	int ret;
 
 	drvc = sdi->driver->context;
 	devc = sdi->priv;
 	usb = sdi->conn;
 
-	/* Try the whole shebang three times, fingers crossed. */
-	for (i = 0; i < 3; i++) {
-		ret = sr_usb_open(drvc->sr_ctx->libusb_ctx, usb);
-		if (ret != SR_OK)
-			return ret;
+	ret = sr_usb_open(drvc->sr_ctx->libusb_ctx, usb);
+	if (ret != SR_OK)
+		return ret;
 
-		ret = libusb_set_configuration(usb->devhdl, USB_CONFIG);
-		if (ret != LIBUSB_SUCCESS) {
-			sr_err("Failed to set USB configuration: %s.",
-				libusb_error_name(ret));
-			sr_usb_close(usb);
-			return SR_ERR;
-		}
-
-		ret = libusb_claim_interface(usb->devhdl, USB_INTERFACE);
-		if (ret != LIBUSB_SUCCESS) {
-			sr_err("Failed to claim interface: %s.",
-				libusb_error_name(ret));
-			sr_usb_close(usb);
-			return SR_ERR;
-		}
-
-		ret = drain_usb(usb, EP_REPLY);
-		if (ret != SR_OK) {
-			sr_usb_close(usb);
-			return ret;
-		}
-		/* This delay appears to be necessary for reliable operation. */
-		g_usleep(30 * 1000);
-
-		sdi->status = SR_ST_ACTIVE;
-
-		devc->active_fpga_config = FPGA_NOCONF;
-		devc->short_transfer_quirk = FALSE;
-		devc->state = STATE_IDLE;
-
-		ret = (*devc->model->apply_fpga_config)(sdi);
-
-		if (ret == SR_OK)
-			ret = (*devc->model->device_init_check)(sdi);
-		if (ret == SR_OK)
-			break;
-
-		/* Rinse and repeat. */
-		sdi->status = SR_ST_INACTIVE;
+	ret = libusb_set_configuration(usb->devhdl, USB_CONFIG);
+	if (ret != LIBUSB_SUCCESS) {
+		sr_err("Failed to set USB configuration: %s.",
+			libusb_error_name(ret));
 		sr_usb_close(usb);
+		return SR_ERR;
 	}
 
-	if (ret == SR_OK && devc->short_transfer_quirk)
-		sr_warn("Short transfer quirk detected! "
-			"Memory reads will be slow.");
-	return ret;
+	ret = libusb_claim_interface(usb->devhdl, USB_INTERFACE);
+	if (ret != LIBUSB_SUCCESS) {
+		sr_err("Failed to claim interface: %s.",
+			libusb_error_name(ret));
+		sr_usb_close(usb);
+		return SR_ERR;
+	}
+
+	sdi->status = SR_ST_ACTIVE;
+
+	devc->active_fpga_config = FPGA_NOCONF;
+	devc->state = STATE_IDLE;
+
+	return sla5032_apply_fpga_config(sdi);
 }
 
 static int dev_close(struct sr_dev_inst *sdi)
 {
-	struct dev_context *devc;
 	struct sr_usb_dev_inst *usb;
-	int ret;
 
-	devc = sdi->priv;
 	usb = sdi->conn;
-
-	if (devc->acquisition) {
-		sr_err("Cannot close device during acquisition!");
-		/* Request stop, leak handle, and prepare for the worst. */
-		devc->cancel_requested = TRUE;
-		return SR_ERR_BUG;
-	}
-
-	/* Download of the shutdown bitstream, if any. */
-	ret = (*devc->model->apply_fpga_config)(sdi);
-	if (ret != SR_OK)
-		sr_warn("Unable to shut down device.");
 
 	if (usb->devhdl)
 		libusb_release_interface(usb->devhdl, USB_INTERFACE);
 
 	sr_usb_close(usb);
 
-	return ret;
+	return SR_OK;
 }
 
 /* Check whether the device options contain a specific key.
  * Also match against get/set/list bits if specified.
  */
-static int has_devopt(const struct model_info *model, uint32_t key)
+static int has_devopt(uint32_t key)
 {
 	unsigned int i;
 
-	for (i = 0; i < model->num_devopts; i++) {
-		if ((model->devopts[i] & (SR_CONF_MASK | key)) == key)
+	for (i = 0; i < ARRAY_SIZE(devopts); i++) {
+		if ((devopts[i] & (SR_CONF_MASK | key)) == key)
 			return TRUE;
 	}
 
@@ -331,7 +266,6 @@ static int config_get(uint32_t key, GVariant **data,
 	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
 {
 	struct dev_context *devc;
-	unsigned int idx;
 
 	(void)cg;
 
@@ -340,43 +274,21 @@ static int config_get(uint32_t key, GVariant **data,
 
 	devc = sdi->priv;
 
-	if (!has_devopt(devc->model, key | SR_CONF_GET))
+	if (!has_devopt(key | SR_CONF_GET))
 		return SR_ERR_NA;
 
 	switch (key) {
 	case SR_CONF_SAMPLERATE:
 		*data = g_variant_new_uint64(devc->samplerate);
 		break;
-	case SR_CONF_LIMIT_MSEC:
-		*data = g_variant_new_uint64(devc->limit_msec);
-		break;
 	case SR_CONF_LIMIT_SAMPLES:
 		*data = g_variant_new_uint64(devc->limit_samples);
 		break;
+	case SR_CONF_CAPTURE_RATIO:
+		*data = g_variant_new_uint64(devc->capture_ratio);
+		break;
 	case SR_CONF_RLE:
-		*data = g_variant_new_boolean(devc->cfg_rle);
-		break;
-	case SR_CONF_EXTERNAL_CLOCK:
-		*data = g_variant_new_boolean(devc->cfg_clock_source
-						== CLOCK_EXT_CLK);
-		break;
-	case SR_CONF_CLOCK_EDGE:
-		idx = devc->cfg_clock_edge;
-		if (idx >= ARRAY_SIZE(signal_edges))
-			return SR_ERR_BUG;
-		*data = g_variant_new_string(signal_edges[idx]);
-		break;
-	case SR_CONF_TRIGGER_SOURCE:
-		idx = devc->cfg_trigger_source;
-		if (idx >= ARRAY_SIZE(trigger_sources))
-			return SR_ERR_BUG;
-		*data = g_variant_new_string(trigger_sources[idx]);
-		break;
-	case SR_CONF_TRIGGER_SLOPE:
-		idx = devc->cfg_trigger_slope;
-		if (idx >= ARRAY_SIZE(signal_edges))
-			return SR_ERR_BUG;
-		*data = g_variant_new_string(signal_edges[idx]);
+		*data = g_variant_new_boolean(TRUE);
 		break;
 	default:
 		/* Must not happen for a key listed in devopts. */
@@ -400,50 +312,24 @@ static int config_set(uint32_t key, GVariant *data,
 
 	devc = sdi->priv;
 
-	if (!has_devopt(devc->model, key | SR_CONF_SET))
+	if (!has_devopt(key | SR_CONF_SET))
 		return SR_ERR_NA;
 
 	switch (key) {
 	case SR_CONF_SAMPLERATE:
 		value = g_variant_get_uint64(data);
-		if (value < devc->model->samplerates[devc->model->num_samplerates - 1]
-				|| value > devc->model->samplerates[0])
-			return SR_ERR_SAMPLERATE;
-		devc->samplerate = value;
-		break;
-	case SR_CONF_LIMIT_MSEC:
-		value = g_variant_get_uint64(data);
-		if (value > MAX_LIMIT_MSEC)
+		if ((idx = std_u64_idx(data, ARRAY_AND_SIZE(samplerates))) < 0)
 			return SR_ERR_ARG;
-		devc->limit_msec = value;
+		devc->samplerate = samplerates[idx];
 		break;
 	case SR_CONF_LIMIT_SAMPLES:
 		value = g_variant_get_uint64(data);
-		if (value > MAX_LIMIT_SAMPLES)
+		if (value > MAX_LIMIT_SAMPLES || value < MIN_LIMIT_SAMPLES)
 			return SR_ERR_ARG;
 		devc->limit_samples = value;
 		break;
-	case SR_CONF_RLE:
-		devc->cfg_rle = g_variant_get_boolean(data);
-		break;
-	case SR_CONF_EXTERNAL_CLOCK:
-		devc->cfg_clock_source = (g_variant_get_boolean(data))
-			? CLOCK_EXT_CLK : CLOCK_INTERNAL;
-		break;
-	case SR_CONF_CLOCK_EDGE:
-		if ((idx = std_str_idx(data, ARRAY_AND_SIZE(signal_edges))) < 0)
-			return SR_ERR_ARG;
-		devc->cfg_clock_edge = idx;
-		break;
-	case SR_CONF_TRIGGER_SOURCE:
-		if ((idx = std_str_idx(data, ARRAY_AND_SIZE(trigger_sources))) < 0)
-			return SR_ERR_ARG;
-		devc->cfg_trigger_source = idx;
-		break;
-	case SR_CONF_TRIGGER_SLOPE:
-		if ((idx = std_str_idx(data, ARRAY_AND_SIZE(signal_edges))) < 0)
-			return SR_ERR_ARG;
-		devc->cfg_trigger_slope = idx;
+	case SR_CONF_CAPTURE_RATIO:
+		devc->capture_ratio = g_variant_get_uint64(data);
 		break;
 	default:
 		/* Must not happen for a key listed in devopts. */
@@ -464,7 +350,7 @@ static int config_channel_set(const struct sr_dev_inst *sdi,
 
 	devc = sdi->priv;
 
-	if (ch->index < 0 || ch->index >= devc->model->num_channels) {
+	if (ch->index < 0 || ch->index >= NUM_CHANNELS) {
 		sr_err("Channel index %d out of range.", ch->index);
 		return SR_ERR_BUG;
 	}
@@ -485,8 +371,8 @@ static int config_channel_set(const struct sr_dev_inst *sdi,
 /* Derive trigger masks from the session's trigger configuration. */
 static int prepare_trigger_masks(const struct sr_dev_inst *sdi)
 {
-	uint64_t trigger_mask, trigger_values, trigger_edge_mask;
-	uint64_t level_bit, type_bit;
+	uint32_t trigger_mask, trigger_values, trigger_edge_mask;
+	uint32_t level_bit, type_bit;
 	struct dev_context *devc;
 	struct sr_trigger *trigger;
 	struct sr_trigger_stage *stage;
@@ -497,19 +383,20 @@ static int prepare_trigger_masks(const struct sr_dev_inst *sdi)
 
 	devc = sdi->priv;
 
+	trigger_mask = 0;
+	trigger_values = 0;
+	trigger_edge_mask = 0;
+
 	trigger = sr_session_trigger_get(sdi->session);
-	if (!trigger || !trigger->stages)
-		return SR_OK;
+	if (!trigger || !trigger->stages) {
+		goto no_triggers;
+	}
 
 	if (trigger->stages->next) {
 		sr_err("This device only supports 1 trigger stage.");
 		return SR_ERR_ARG;
 	}
 	stage = trigger->stages->data;
-
-	trigger_mask = 0;
-	trigger_values = 0;
-	trigger_edge_mask = 0;
 
 	for (node = stage->matches; node; node = node->next) {
 		match = node->data;
@@ -520,26 +407,28 @@ static int prepare_trigger_masks(const struct sr_dev_inst *sdi)
 		idx = match->channel->index;
 		trg = match->match;
 
-		if (idx < 0 || idx >= devc->model->num_channels) {
+		if (idx < 0 || idx >= NUM_CHANNELS) {
 			sr_err("Channel index %d out of range.", idx);
 			return SR_ERR_BUG; /* Should not happen. */
 		}
 		if (trg != SR_TRIGGER_ZERO
-				&& trg != SR_TRIGGER_ONE
-				&& trg != SR_TRIGGER_RISING
-				&& trg != SR_TRIGGER_FALLING) {
-			sr_err("Unsupported trigger match for CH%d.", idx + 1);
+			&& trg != SR_TRIGGER_ONE
+			&& trg != SR_TRIGGER_RISING
+			&& trg != SR_TRIGGER_FALLING) {
+			sr_err("Unsupported trigger match for CH%d.", idx);
 			return SR_ERR_ARG;
 		}
 		level_bit = (trg == SR_TRIGGER_ONE
 			|| trg == SR_TRIGGER_RISING) ? 1 : 0;
 		type_bit = (trg == SR_TRIGGER_RISING
-			|| trg == SR_TRIGGER_FALLING) ? 1 : 0;
+			|| trg == SR_TRIGGER_FALLING) ? 1 : 0; /* 1 if edge triggered, 0 if level triggered */
 
-		trigger_mask |= UINT64_C(1) << idx;
+		trigger_mask |= UINT32_C(1) << idx;
 		trigger_values |= level_bit << idx;
 		trigger_edge_mask |= type_bit << idx;
 	}
+
+no_triggers:
 	devc->trigger_mask = trigger_mask;
 	devc->trigger_values = trigger_values;
 	devc->trigger_edge_mask = trigger_edge_mask;
@@ -549,21 +438,13 @@ static int prepare_trigger_masks(const struct sr_dev_inst *sdi)
 
 static int config_commit(const struct sr_dev_inst *sdi)
 {
-	struct dev_context *devc;
 	int ret;
-
-	devc = sdi->priv;
-
-	if (devc->acquisition) {
-		sr_err("Acquisition still in progress?");
-		return SR_ERR;
-	}
 
 	ret = prepare_trigger_masks(sdi);
 	if (ret != SR_OK)
 		return ret;
 
-	ret = (*devc->model->apply_fpga_config)(sdi);
+	ret = sla5032_apply_fpga_config(sdi);
 	if (ret != SR_OK) {
 		sr_err("Failed to apply FPGA configuration.");
 		return ret;
@@ -584,28 +465,27 @@ static int config_list(uint32_t key, GVariant **data,
 	case SR_CONF_DEVICE_OPTIONS:
 		return std_opts_config_list(key, data, sdi, cg,
 			ARRAY_AND_SIZE(scanopts), ARRAY_AND_SIZE(drvopts),
-			(devc) ? devc->model->devopts : NULL,
-			(devc) ? devc->model->num_devopts : 0);
+			(devc) ? devopts : NULL,
+			(devc) ? ARRAY_SIZE(devopts) : 0);
 	}
 
 	if (!devc)
 		return SR_ERR_ARG;
-	if (!has_devopt(devc->model, key | SR_CONF_LIST))
+	if (!has_devopt(key | SR_CONF_LIST))
 		return SR_ERR_NA;
 
 	switch (key) {
 	case SR_CONF_SAMPLERATE:
-		*data = std_gvar_samplerates(devc->model->samplerates, devc->model->num_samplerates);
+		*data = std_gvar_samplerates(ARRAY_AND_SIZE(samplerates));
+		break;
+	case SR_CONF_LIMIT_SAMPLES:
+		*data = std_gvar_tuple_u64(MIN_LIMIT_SAMPLES, MAX_LIMIT_SAMPLES);
+		break;
+	case SR_CONF_CAPTURE_RATIO:
+		*data = std_gvar_array_u64(ARRAY_AND_SIZE(capture_ratios));
 		break;
 	case SR_CONF_TRIGGER_MATCH:
 		*data = std_gvar_array_i32(ARRAY_AND_SIZE(trigger_matches));
-		break;
-	case SR_CONF_TRIGGER_SOURCE:
-		*data = g_variant_new_strv(ARRAY_AND_SIZE(trigger_sources));
-		break;
-	case SR_CONF_TRIGGER_SLOPE:
-	case SR_CONF_CLOCK_EDGE:
-		*data = g_variant_new_strv(ARRAY_AND_SIZE(signal_edges));
 		break;
 	default:
 		/* Must not happen for a key listed in devopts. */
@@ -621,7 +501,7 @@ static int config_list(uint32_t key, GVariant **data,
  */
 static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
-	return lwla_start_acquisition(sdi);
+	return sla5032_start_acquisition(sdi);
 }
 
 static int dev_acquisition_stop(struct sr_dev_inst *sdi)
@@ -630,17 +510,18 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 
 	devc = sdi->priv;
 
-	if (devc->state != STATE_IDLE && !devc->cancel_requested) {
-		devc->cancel_requested = TRUE;
-		sr_dbg("Requesting cancel.");
-	}
+	sr_session_source_remove(sdi->session, -1);
+
+	std_session_send_df_end(sdi);
+
+	devc->state = STATE_IDLE;
 
 	return SR_OK;
 }
 
-static struct sr_dev_driver sysclk_lwla_driver_info = {
-	.name = "sysclk-lwla",
-	.longname = "Sysclk LWLA series",
+static struct sr_dev_driver sysclk_sla5032_driver_info = {
+	.name = "sysclk-sla5032",
+	.longname = "Sysclk SLA5032",
 	.api_version = 1,
 	.init = std_init,
 	.cleanup = std_cleanup,
@@ -658,4 +539,4 @@ static struct sr_dev_driver sysclk_lwla_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
-SR_REGISTER_DEV_DRIVER(sysclk_lwla_driver_info);
+SR_REGISTER_DEV_DRIVER(sysclk_sla5032_driver_info);

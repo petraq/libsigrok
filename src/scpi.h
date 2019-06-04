@@ -65,6 +65,16 @@ enum {
 	SCPI_CMD_GET_DIG_CHAN_NAME,
 };
 
+enum scpi_transport_layer {
+	SCPI_TRANSPORT_LIBGPIB,
+	SCPI_TRANSPORT_SERIAL,
+	SCPI_TRANSPORT_RAW_TCP,
+	SCPI_TRANSPORT_RIGOL_TCP,
+	SCPI_TRANSPORT_USBTMC,
+	SCPI_TRANSPORT_VISA,
+	SCPI_TRANSPORT_VXI,
+};
+
 struct scpi_command {
 	int command;
 	const char *string;
@@ -80,11 +90,13 @@ struct sr_scpi_hw_info {
 struct sr_scpi_dev_inst {
 	const char *name;
 	const char *prefix;
+	enum scpi_transport_layer transport;
 	int priv_size;
 	GSList *(*scan)(struct drv_context *drvc);
 	int (*dev_inst_new)(void *priv, struct drv_context *drvc,
 		const char *resource, char **params, const char *serialcomm);
 	int (*open)(struct sr_scpi_dev_inst *scpi);
+	int (*connection_id)(struct sr_scpi_dev_inst *scpi, char **connection_id);
 	int (*source_add)(struct sr_session *session, void *priv, int events,
 		int timeout, sr_receive_data_callback cb, void *cb_data);
 	int (*source_remove)(struct sr_session *session, void *priv);
@@ -108,6 +120,8 @@ SR_PRIV GSList *sr_scpi_scan(struct drv_context *drvc, GSList *options,
 SR_PRIV struct sr_scpi_dev_inst *scpi_dev_inst_new(struct drv_context *drvc,
 		const char *resource, const char *serialcomm);
 SR_PRIV int sr_scpi_open(struct sr_scpi_dev_inst *scpi);
+SR_PRIV int sr_scpi_connection_id(struct sr_scpi_dev_inst *scpi,
+		char **connection_id);
 SR_PRIV int sr_scpi_source_add(struct sr_session *session,
 		struct sr_scpi_dev_inst *scpi, int events, int timeout,
 		sr_receive_data_callback cb, void *cb_data);
@@ -162,5 +176,11 @@ SR_PRIV int sr_scpi_cmd_resp(const struct sr_dev_inst *sdi,
 		const struct scpi_command *cmdtable,
 		int channel_command, const char *channel_name,
 		GVariant **gvar, const GVariantType *gvtype, int command, ...);
+
+/*--- GPIB only functions ---------------------------------------------------*/
+
+#ifdef HAVE_LIBGPIB
+SR_PRIV int sr_scpi_gpib_spoll(struct sr_scpi_dev_inst *scpi, char *buf);
+#endif
 
 #endif

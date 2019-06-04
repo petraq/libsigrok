@@ -183,6 +183,8 @@ static struct sr_key_info sr_key_info_config[] = {
 		"Trigger level", NULL},
 	{SR_CONF_EXTERNAL_CLOCK_SOURCE, SR_T_STRING, "external_clock_source",
 		"External clock source", NULL},
+	{SR_CONF_OFFSET, SR_T_FLOAT, "offset",
+		"Offset", NULL},
 
 	/* Special stuff */
 	{SR_CONF_SESSIONFILE, SR_T_STRING, "sessionfile",
@@ -568,6 +570,12 @@ SR_PRIV void sr_hw_cleanup_all(const struct sr_context *ctx)
  * Allocate struct sr_config.
  *
  * A floating reference can be passed in for data.
+ *
+ * @param key The config key to use.
+ * @param data The GVariant data to use.
+ *
+ * @return The newly allocated struct sr_config. This function is assumed
+ *         to never fail.
  *
  * @private
  */
