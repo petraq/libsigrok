@@ -153,7 +153,7 @@ static void ols_channel_new(struct sr_dev_inst *sdi, int num_chan)
 
 	for (i = 0; i < num_chan; i++)
 		sr_channel_new(sdi, i, SR_CHANNEL_LOGIC, TRUE,
-				ols_channel_names[i]);
+				sump2_channel_names[i]);
 
 	devc->max_channels = num_chan;
 }
